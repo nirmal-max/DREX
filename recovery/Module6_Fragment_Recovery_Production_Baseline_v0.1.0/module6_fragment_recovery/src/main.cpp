@@ -1,0 +1,9 @@
+#include "fragment/source.hpp"
+#include "fragment/signatures.hpp"
+#include "fragment/chains.hpp"
+#include "fragment/reconstruct.hpp"
+#include "fragment/json.hpp"
+#include <fstream>
+#include <iostream>
+#include <algorithm>
+int main(int argc,char**argv){std::string src,type_s,out,dest;std::uint64_t block=4096,limit=0;long long recover=-1;for(int i=1;i<argc;i++){std::string a=argv[i];if(a=="--source"&&i+1<argc)src=argv[++i];else if(a=="--type"&&i+1<argc)type_s=argv[++i];else if(a=="--block-size"&&i+1<argc)block=std::stoull(argv[++i]);else if(a=="--limit"&&i+1<argc)limit=std::stoull(argv[++i]);else if(a=="--output"&&i+1<argc)out=argv[++i];else if(a=="--recover"&&i+1<argc)recover=std::stoll(argv[++i]);else if(a=="--destination"&&i+1<argc)dest=argv[++i];else{std::cerr<<"usage: fragmentscan --source image --type pdf|jpeg|png|zip [--block-size N] [--recover ID --destination dir]\n";return 2;}}if(src.empty()||type_s.empty()){std::cerr<<"source and type required\n";return 2;}std::string e;auto s=frag::open_source(src,e);if(!s){std::cerr<<e<<"\n";return 3;}auto t=frag::parse_type(type_s);if(t==frag::FileType::Unknown){std::cerr<<"unsupported type\n";return 3;}if(!limit)limit=s->size();auto fs=frag::find_anchors(*s,t,block,limit);auto es=frag::build_edges(*s,fs,block);auto cs=frag::build_chains(fs,es,8);frag::Result r{};r.status=cs.empty()?"no_chains":"complete";r.source_size=s->size();r.block_size=block;r.fragments=fs;r.edges=es;r.chains=cs;auto j=frag::json(r);if(out.empty())std::cout<<j<<"\n";else{std::ofstream f(out);f<<j;}if(recover>=0){auto it=std::find_if(cs.begin(),cs.end(),[&](auto&c){return(long long)c.id==recover;});if(it==cs.end()){std::cerr<<"chain not found\n";return 4;}if(dest.empty()){std::cerr<<"destination required\n";return 4;}if(!frag::recover(*s,*it,fs,dest,e)){std::cerr<<e<<"\n";return 5;}}return 0;}

@@ -1,0 +1,8 @@
+#include "deep/source.hpp"
+#include "deep/scanner.hpp"
+#include "deep/json.hpp"
+#include <fstream>
+#include <iostream>
+int main(int argc,char**argv){std::string src,out,state,resume;std::uint64_t off=0,size=0,stride=1024*1024;for(int i=1;i<argc;i++){std::string a=argv[i];if(a=="--source"&&i+1<argc)src=argv[++i];else if(a=="--output"&&i+1<argc)out=argv[++i];else if(a=="--offset"&&i+1<argc)off=std::stoull(argv[++i]);else if(a=="--size"&&i+1<argc)size=std::stoull(argv[++i]);else if(a=="--stride"&&i+1<argc)stride=std::stoull(argv[++i]);else if(a=="--state"&&i+1<argc)state=argv[++i];else if(a=="--resume"&&i+1<argc)resume=argv[++i];else{std::cerr<<"usage: deepscan --source image [--offset N --size N --stride N] [--state file] [--output file]\n";return 2;}}
+if(src.empty()){std::cerr<<"--source required\n";return 2;}std::string e;auto s=deep::open_source(src,e);if(!s){std::cerr<<e<<"\n";return 3;}if(resume.empty()){if(size==0)size=s->size()-std::min(off,s->size());}else{deep::ScanState st{};if(!deep::load_state(resume,st)){std::cerr<<"cannot load state\n";return 4;}off=st.region_offset;size=st.region_size;stride=st.stride;}
+auto r=deep::scan(*s,{off,size,stride});if(!state.empty()){deep::ScanState st{};st.next_offset=off+size;st.source_size=s->size();st.region_offset=off;st.region_size=size;st.stride=stride;st.candidates=r.candidates.size();deep::save_state(st,state);r.state_file=state;}auto j=deep::json(r);if(out.empty())std::cout<<j<<"\n";else{std::ofstream f(out);if(!f){std::cerr<<"cannot write output\n";return 5;}f<<j;}return (r.status=="complete"||r.status=="no_filesystem_candidates")?0:1;}
