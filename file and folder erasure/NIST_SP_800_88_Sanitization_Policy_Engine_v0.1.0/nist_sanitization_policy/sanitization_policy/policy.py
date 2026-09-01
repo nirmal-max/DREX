@@ -31,9 +31,28 @@ def evaluate(req: SanitizationRequest) -> SanitizationDecision:
     if req.device_locked:
         warnings.append("Device is reported locked; execution adapter must establish the required administrative/device state before sanitization.")
 
+    # Device-native sanitization operates on media, namespaces, or logical volumes.
+    # It must never be selected for an individual file/folder target because doing so
+    # would sanitize a broader storage object than the requested scope.
+    device_scope = req.scope in (Scope.LOGICAL_VOLUME, Scope.NAMESPACE, Scope.FULL_MEDIA)
+    if not device_scope and req.assurance == Assurance.PURGE:
+        warnings.append("Device-native purge methods are not valid for file/folder scope; the policy engine will not broaden the target scope.")
+        warnings.append("Escalate to an approved file-level sanitization procedure or organizational review.")
+        rationale.append("The requested purge scope is narrower than the media/device scope supported by this policy engine.")
+        return SanitizationDecision(
+            SanitizationMethod.MANUAL_REVIEW,
+            req.assurance,
+            "low",
+            tuple(rationale),
+            tuple(warnings),
+            _verification(req, SanitizationMethod.MANUAL_REVIEW),
+            tuple(prerequisites),
+            tuple(rejected),
+        )
+
     # Cryptographic erase is preferred for applicable encrypted media when the key hierarchy
     # and destruction mechanism have actually been established.
-    if req.encrypted and req.key_management_verified and (
+    if device_scope and req.encrypted and req.key_management_verified and (
         Capability.CRYPTO_ERASE in req.capabilities or
         Capability.KEY_ZEROIZATION in req.capabilities
     ):
@@ -54,16 +73,14 @@ def evaluate(req: SanitizationRequest) -> SanitizationDecision:
         )
 
     # NVMe native sanitize.
-    if req.media_type == MediaType.NVME and Capability.NVME_SANITIZE in req.capabilities:
+    if device_scope and req.media_type == MediaType.NVME and Capability.NVME_SANITIZE in req.capabilities:
         if req.assurance == Assurance.PURGE:
             if Capability.NVME_FORMAT_CRYPTO in req.capabilities:
                 method = SanitizationMethod.NVME_SANITIZE_CRYPTO
                 rationale.append("NVMe native cryptographic sanitization capability is available for purge.")
-            elif Capability.NVME_SANITIZE in req.capabilities:
+            else:
                 method = SanitizationMethod.NVME_SANITIZE_CRYPTO
                 rationale.append("NVMe Sanitize is available; execution adapter must select a supported purge-capable action.")
-            else:
-                method = SanitizationMethod.MANUAL_REVIEW
             prerequisites.append("Query controller sanitize capabilities and status immediately before execution.")
         else:
             method = SanitizationMethod.NVME_SANITIZE_BLOCK if Capability.NVME_FORMAT_USER in req.capabilities else SanitizationMethod.NVME_SANITIZE_OVERWRITE
@@ -74,7 +91,7 @@ def evaluate(req: SanitizationRequest) -> SanitizationDecision:
         )
 
     # ATA-native path.
-    if req.media_type in (MediaType.SSD, MediaType.HDD) and Capability.ATA_SECURE_ERASE in req.capabilities:
+    if device_scope and req.media_type in (MediaType.SSD, MediaType.HDD) and Capability.ATA_SECURE_ERASE in req.capabilities:
         if req.assurance == Assurance.PURGE and Capability.ATA_ENHANCED_SECURE_ERASE in req.capabilities:
             method = SanitizationMethod.ATA_ENHANCED_SECURE_ERASE
             rationale.append("ATA enhanced native erase is available and is preferred for the requested purge assurance.")
@@ -93,7 +110,7 @@ def evaluate(req: SanitizationRequest) -> SanitizationDecision:
         )
 
     # Generic device-native path.
-    if Capability.DEVICE_SANITIZE in req.capabilities:
+    if device_scope and Capability.DEVICE_SANITIZE in req.capabilities:
         rationale.append("A device-native sanitization capability is declared; use the vendor/technology-specific approved implementation.")
         prerequisites.append("Establish trust in the device sanitization implementation and record its capability/status evidence.")
         return SanitizationDecision(
