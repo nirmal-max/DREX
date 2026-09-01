@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
-import base64, hashlib, json, os, secrets, time
+import base64, hashlib, json, os, secrets, stat, time
 from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -19,11 +19,14 @@ def _id_hash(value: str):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _zeroize(buf: bytearray):
-    # Best-effort application-memory zeroization. Python does not guarantee that all
-    # copies created by the interpreter/runtime are removed.
-    for i in range(len(buf)):
-        buf[i]=0
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        n = os.write(fd, view[offset:])
+        if n <= 0:
+            raise CryptoErasureError("short/failed key-store write")
+        offset += n
 
 
 class KeyStore(Protocol):
@@ -34,60 +37,75 @@ class KeyStore(Protocol):
 
 
 class LocalKeyStore:
-    """Reference backend.
+    """Reference/testing key store.
 
-    Keys are stored as individual files with restrictive permissions. This backend is
-    for integration/testing; an enterprise build should implement KeyStore using a
-    KMS/HSM that provides authenticated key destruction and independent audit logging.
+    A local filesystem cannot provide HSM/KMS-grade guarantees about every historical
+    copy, backup, snapshot, or storage-layer replica. Production deployments should
+    implement KeyStore with an authoritative KMS/HSM and independently auditable key
+    destruction.
     """
 
     def __init__(self, directory):
-        self.directory=Path(directory)
-        self.directory.mkdir(parents=True,exist_ok=True)
-        try: os.chmod(self.directory,0o700)
-        except OSError: pass
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.directory, 0o700)
+        except OSError:
+            pass
 
-    def _path(self,key_id):
-        if not key_id or "/" in key_id or "\\" in key_id or key_id in {".",".."}:
+    def _path(self, key_id):
+        if not key_id or "/" in key_id or "\\" in key_id or key_id in {".", ".."}:
             raise CryptoErasureError("invalid key identifier")
-        return self.directory/(key_id+".key")
+        return self.directory / (key_id + ".key")
 
-    def create_key(self,key_id):
-        p=self._path(key_id)
+    def create_key(self, key_id):
+        p = self._path(key_id)
         if p.exists():
             raise CryptoErasureError("key already exists")
-        key=secrets.token_bytes(32)
-        flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
-        fd=os.open(p,flags,0o600)
+        key = secrets.token_bytes(32)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(p, flags, 0o600)
         try:
-            os.write(fd,key)
+            _write_all(fd, key)
             os.fsync(fd)
         finally:
             os.close(fd)
         return True
 
-    def get_key(self,key_id):
-        p=self._path(key_id)
+    def get_key(self, key_id):
+        p = self._path(key_id)
         if not p.exists():
             raise CryptoErasureError("key not found")
-        data=p.read_bytes()
-        if len(data)!=32:
+        data = p.read_bytes()
+        if len(data) != 32:
             raise CryptoErasureError("invalid key length")
         return data
 
-    def destroy_key(self,key_id):
-        p=self._path(key_id)
+    def destroy_key(self, key_id):
+        p = self._path(key_id)
         if not p.exists():
             raise CryptoErasureError("key not found")
-        # The decisive operation is key removal from the authoritative store. A local
-        # filesystem cannot provide HSM-grade guarantees about every storage copy.
-        with p.open("r+b",buffering=0) as f:
-            f.write(secrets.token_bytes(32))
-            f.flush(); os.fsync(f.fileno())
+        replacement = secrets.token_bytes(32)
+        fd = os.open(p, os.O_WRONLY | os.O_TRUNC)
+        try:
+            _write_all(fd, replacement)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         p.unlink()
+        # Persist the namespace deletion where supported. This is still not an HSM/KMS
+        # guarantee and is deliberately documented as a reference backend limitation.
+        try:
+            dfd = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
         return True
 
-    def exists(self,key_id):
+    def exists(self, key_id):
         return self._path(key_id).exists()
 
 
@@ -105,25 +123,27 @@ class Envelope:
 
 
 def create_envelope(key_store: KeyStore, key_id: str, plaintext: bytes, target_id: str):
-    key=key_store.get_key(key_id)
-    nonce=secrets.token_bytes(12)
-    aad=target_id.encode()
-    ciphertext=AESGCM(key).encrypt(nonce,plaintext,aad)
-    return Envelope(
-        version=1,
-        key_id=key_id,
-        nonce_b64=base64.b64encode(nonce).decode(),
-        ciphertext_b64=base64.b64encode(ciphertext).decode(),
-        aad_b64=base64.b64encode(aad).decode(),
-        target_id=target_id
-    )
+    key = key_store.get_key(key_id)
+    nonce = secrets.token_bytes(12)
+    aad = target_id.encode()
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
+    return Envelope(1, key_id, base64.b64encode(nonce).decode(),
+                    base64.b64encode(ciphertext).decode(),
+                    base64.b64encode(aad).decode(), target_id)
 
 
 def save_envelope(path, envelope: Envelope):
-    p=Path(path)
-    tmp=p.with_suffix(p.suffix+".tmp")
-    tmp.write_text(json.dumps(envelope.to_dict(),sort_keys=True),encoding="utf-8")
-    os.replace(tmp,p)
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        data = json.dumps(envelope.to_dict(), sort_keys=True).encode("utf-8")
+        _write_all(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, p)
 
 
 def load_envelope(path):
@@ -131,11 +151,13 @@ def load_envelope(path):
 
 
 def decrypt_envelope(key_store: KeyStore, envelope: Envelope):
-    key=key_store.get_key(envelope.key_id)
-    nonce=base64.b64decode(envelope.nonce_b64)
-    ciphertext=base64.b64decode(envelope.ciphertext_b64)
-    aad=base64.b64decode(envelope.aad_b64)
-    return AESGCM(key).decrypt(nonce,ciphertext,aad)
+    key = key_store.get_key(envelope.key_id)
+    nonce = base64.b64decode(envelope.nonce_b64, validate=True)
+    ciphertext = base64.b64decode(envelope.ciphertext_b64, validate=True)
+    aad = base64.b64decode(envelope.aad_b64, validate=True)
+    if envelope.target_id.encode() != aad:
+        raise CryptoErasureError("envelope AAD/target mismatch")
+    return AESGCM(key).decrypt(nonce, ciphertext, aad)
 
 
 def destroy_key(key_store: KeyStore, key_id: str):
@@ -148,35 +170,36 @@ def destroy_key(key_store: KeyStore, key_id: str):
 
 
 def verify_erasure(key_store: KeyStore, envelope: Envelope):
-    # Two independent checks:
-    # 1. authoritative key store reports the key absent;
-    # 2. decryption through the key store is impossible.
     if key_store.exists(envelope.key_id):
         return False, "key-still-present"
     try:
-        decrypt_envelope(key_store,envelope)
-    except CryptoErasureError:
-        return True, "key-unavailable"
+        decrypt_envelope(key_store, envelope)
+    except CryptoErasureError as exc:
+        if str(exc) == "key not found":
+            return True, "key-unavailable"
+        # A different CryptoErasureError does not prove the key is unavailable.
+        return False, "verification-error"
     except Exception:
-        # A missing key is the expected reason in the reference backend.
-        return True, "decryption-failed-after-key-destruction"
+        # Unexpected backend/format failures are inconclusive, never proof of erasure.
+        return False, "verification-error"
     return False, "decryption-still-succeeded"
 
 
 def write_audit(path, *, action, key_id, target_id, status, details=None):
-    record={
-        "schema":"secure-erasure.audit.v1",
-        "method":"cryptographic-erasure",
-        "action":action,
-        "created_utc":_utc_now(),
-        "key_id_hash":_id_hash(key_id),
-        "target_id_hash":_id_hash(target_id),
-        "status":status,
-        "details":details or {},
-        "secrets_recorded":False
+    record = {
+        "schema": "secure-erasure.audit.v1",
+        "method": "cryptographic-erasure",
+        "action": action,
+        "created_utc": _utc_now(),
+        "key_id_hash": _id_hash(key_id),
+        "target_id_hash": _id_hash(target_id),
+        "status": status,
+        "details": details or {},
+        "secrets_recorded": False,
     }
-    out=Path(path); out.parent.mkdir(parents=True,exist_ok=True)
-    tmp=out.with_suffix(out.suffix+".tmp")
-    tmp.write_text(json.dumps(record,indent=2,sort_keys=True),encoding="utf-8")
-    os.replace(tmp,out)
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, out)
     return out
