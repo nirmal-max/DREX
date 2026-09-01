@@ -7,9 +7,7 @@ from .engine import overwrite_file, overwrite_tree, write_audit, OverwriteError
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(
-        description="Single-pass zero overwrite for applicable regular files."
-    )
+    p = argparse.ArgumentParser(description="Single-pass zero overwrite for applicable regular files.")
     p.add_argument("target")
     p.add_argument("--execute", action="store_true", help="Actually overwrite/delete; default is dry-run.")
     p.add_argument("--confirm", help="Must exactly match the target path when --execute is used.")
@@ -20,23 +18,22 @@ def main(argv=None) -> int:
 
     target = Path(args.target)
     if not args.execute:
-        print(json.dumps({
-            "mode": "dry-run",
-            "target": str(target),
-            "action": "single-pass-zero-overwrite",
-            "warning": "No data was changed. Use --execute --confirm <target> to execute."
-        }, indent=2))
+        print(json.dumps({"mode": "dry-run", "target": str(target), "action": "single-pass-zero-overwrite", "warning": "No data was changed. Use --execute --confirm <target> to execute."}, indent=2))
         return 0
 
     if args.confirm != str(target):
         print("error: --confirm must exactly match the target path", file=sys.stderr)
         return 2
 
+    if not args.verify:
+        print("error: --verify is required for destructive execution; refusing to overwrite/delete", file=sys.stderr)
+        return 2
+
     try:
         if target.is_dir():
-            results = overwrite_tree(target, verify=args.verify, remove=not args.keep)
+            results = overwrite_tree(target, verify=True, remove=not args.keep)
         else:
-            results = [overwrite_file(target, verify=args.verify, remove=not args.keep)]
+            results = [overwrite_file(target, verify=True, remove=not args.keep)]
     except (OSError, OverwriteError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
