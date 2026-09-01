@@ -1,5 +1,6 @@
 #include "fsrecover/source.hpp"
 #include <fstream>
+#include <limits>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -18,7 +19,21 @@ class DeviceSource final: public ISource{
 public:
  DeviceSource(const std::string&p,std::string&e){h_=CreateFileA(p.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_RANDOM_ACCESS,nullptr);if(h_==INVALID_HANDLE_VALUE){e="cannot open physical device read-only";return;}GET_LENGTH_INFORMATION li{};DWORD got{};if(!DeviceIoControl(h_,IOCTL_DISK_GET_LENGTH_INFO,nullptr,0,&li,sizeof(li),&got,nullptr)){e="cannot query device size";CloseHandle(h_);h_=INVALID_HANDLE_VALUE;return;}n_=static_cast<std::uint64_t>(li.Length.QuadPart);id_=p+":"+std::to_string(n_);}
  ~DeviceSource(){if(h_!=INVALID_HANDLE_VALUE)CloseHandle(h_);}
- bool read_at(std::uint64_t o,std::span<std::byte>b)override{if(o>n_||b.size()>n_-o||b.size()>0xFFFFFFFFu)return false;LARGE_INTEGER li{};li.QuadPart=static_cast<LONGLONG>(o);if(!SetFilePointerEx(h_,li,nullptr,FILE_BEGIN))return false;DWORD got{};return ReadFile(h_,b.data(),static_cast<DWORD>(b.size()),&got,nullptr)&&got==b.size();}
+ bool read_at(std::uint64_t o,std::span<std::byte>b)override{
+  if(o>n_||b.size()>n_-o)return false;
+  if(b.empty())return true;
+  constexpr std::size_t max_chunk=static_cast<std::size_t>(std::numeric_limits<DWORD>::max());
+  LARGE_INTEGER li{};li.QuadPart=static_cast<LONGLONG>(o);
+  if(!SetFilePointerEx(h_,li,nullptr,FILE_BEGIN))return false;
+  std::size_t done=0;
+  while(done<b.size()){
+   const DWORD request=static_cast<DWORD>(std::min(b.size()-done,max_chunk));
+   DWORD got=0;
+   if(!ReadFile(h_,b.data()+done,request,&got,nullptr)||got!=request)return false;
+   done+=got;
+  }
+  return true;
+ }
  std::uint64_t size()const override{return n_;}std::string identity()const override{return id_;}
 };
 #endif
