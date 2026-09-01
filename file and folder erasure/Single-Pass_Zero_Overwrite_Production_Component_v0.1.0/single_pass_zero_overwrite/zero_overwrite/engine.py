@@ -39,7 +39,6 @@ def _validate_regular_file(path: Path) -> None:
         st = path.lstat()
     except FileNotFoundError as exc:
         raise OverwriteError(f"target does not exist: {path}") from exc
-
     if stat.S_ISLNK(st.st_mode):
         raise OverwriteError(f"refusing symbolic link: {path}")
     if not stat.S_ISREG(st.st_mode):
@@ -76,6 +75,32 @@ def _clear_readonly(path: Path) -> None:
         path.chmod(mode | stat.S_IWUSR)
 
 
+def _write_all(f, data: bytes) -> int:
+    total = 0
+    view = memoryview(data)
+    while total < len(view):
+        n = f.write(view[total:])
+        if n is None or n <= 0:
+            raise OSError("short write: no progress from file write")
+        total += n
+    return total
+
+
+def _sync_parent(path: Path) -> None:
+    """Best-effort durability for directory-entry removal where supported."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        # Directory fsync is not portable; the file data fsync remains mandatory.
+        return
+
+
 def overwrite_file(
     target: str | os.PathLike,
     *,
@@ -101,8 +126,7 @@ def overwrite_file(
             zero_block = b"\x00" * min(chunk_size, 1024 * 1024)
             while remaining:
                 n = min(remaining, len(zero_block))
-                f.write(zero_block[:n])
-                written += n
+                written += _write_all(f, zero_block[:n])
                 remaining -= n
                 if progress:
                     progress(written, total)
@@ -111,35 +135,25 @@ def overwrite_file(
 
         after = _verify_zero_file(path) if verify else None
         verified = bool(verify and after is not None)
+        if remove and not verified:
+            raise OverwriteError("refusing removal without successful verification")
 
+        removed = False
         if remove:
-            # Remove the directory entry only after successful overwrite/verification.
             path.unlink()
+            _sync_parent(path)
             removed = True
-        else:
-            removed = False
 
         return ErasureResult(
-            target=str(path),
-            bytes_overwritten=written,
-            verified=verified,
-            removed=removed,
-            started_utc=started,
-            completed_utc=_utc_now(),
-            sha256_before=before,
-            sha256_after=after,
+            target=str(path), bytes_overwritten=written, verified=verified,
+            removed=removed, started_utc=started, completed_utc=_utc_now(),
+            sha256_before=before, sha256_after=after,
         )
     except Exception as exc:
         return ErasureResult(
-            target=str(path),
-            bytes_overwritten=written,
-            verified=False,
-            removed=False,
-            started_utc=started,
-            completed_utc=_utc_now(),
-            sha256_before=before,
-            sha256_after=None,
-            error=str(exc),
+            target=str(path), bytes_overwritten=written, verified=False,
+            removed=False, started_utc=started, completed_utc=_utc_now(),
+            sha256_before=before, sha256_after=None, error=str(exc),
         )
 
 
@@ -148,7 +162,6 @@ def _safe_tree(root: Path) -> list[Path]:
         raise OverwriteError(f"refusing symbolic-link root: {root}")
     if not root.is_dir():
         raise OverwriteError(f"target is not a directory: {root}")
-
     files: list[Path] = []
     for p in root.rglob("*"):
         if p.is_symlink():
@@ -167,20 +180,9 @@ def overwrite_tree(
 ) -> list[ErasureResult]:
     root = Path(target)
     files = _safe_tree(root)
-    results = []
-    for p in files:
-        results.append(
-            overwrite_file(
-                p,
-                verify=verify,
-                remove=remove,
-                chunk_size=chunk_size,
-            )
-        )
+    results = [overwrite_file(p, verify=verify, remove=remove, chunk_size=chunk_size) for p in files]
     if remove and all(r.error is None and r.removed for r in results):
-        # Only remove empty directories; symlinked directories are never followed.
-        for d in sorted((p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
-                        reverse=True):
+        for d in sorted((p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()), reverse=True):
             try:
                 d.rmdir()
             except OSError:
@@ -189,6 +191,7 @@ def overwrite_tree(
             root.rmdir()
         except OSError:
             pass
+        _sync_parent(root)
     return results
 
 
@@ -204,4 +207,5 @@ def write_audit(path: str | os.PathLike, results: list[ErasureResult], *, method
     tmp = out.with_suffix(out.suffix + ".tmp")
     tmp.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, out)
+    _sync_parent(out)
     return out
