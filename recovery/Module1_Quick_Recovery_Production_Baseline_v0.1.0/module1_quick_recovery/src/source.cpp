@@ -60,11 +60,22 @@ public:
     ~PhysicalDeviceSource() override { if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_); }
     bool read_at(std::uint64_t offset, std::span<std::byte> out) override {
         if (offset > size_ || out.size() > size_ - offset) return false;
-        LARGE_INTEGER li{}; li.QuadPart = static_cast<LONGLONG>(offset);
+        if (out.empty()) return true;
+
+        LARGE_INTEGER li{};
+        li.QuadPart = static_cast<LONGLONG>(offset);
         if (!SetFilePointerEx(h_, li, nullptr, FILE_BEGIN)) return false;
-        DWORD got = 0;
-        return ReadFile(h_, out.data(), static_cast<DWORD>(out.size()), &got, nullptr) &&
-               got == out.size();
+
+        constexpr std::size_t kMaxRead = static_cast<std::size_t>(std::numeric_limits<DWORD>::max());
+        std::size_t done = 0;
+        while (done < out.size()) {
+            const std::size_t remaining = out.size() - done;
+            const DWORD request = static_cast<DWORD>(remaining > kMaxRead ? kMaxRead : remaining);
+            DWORD got = 0;
+            if (!ReadFile(h_, out.data() + done, request, &got, nullptr) || got != request) return false;
+            done += got;
+        }
+        return true;
     }
     std::uint64_t size() const override { return size_; }
     std::string identity() const override { return identity_; }
