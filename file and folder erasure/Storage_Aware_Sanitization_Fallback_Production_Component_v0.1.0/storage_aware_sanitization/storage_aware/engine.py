@@ -154,7 +154,12 @@ def _validate_executable_plan(plan: SanitizationPlan):
     if plan.command[0] == "logical-overwrite":
         raise PolicyError("logical-overwrite adapter is not bundled; integrate approved HDD writer")
 
-    # Never execute placeholder or malformed device paths as commands.
+    # A plan containing unresolved placeholders is descriptive, not executable.
+    # Never pass a literal placeholder such as <password> to a destructive tool.
+    if any(token.startswith("<") and token.endswith(">") for token in plan.command):
+        raise PolicyError("plan contains an unresolved placeholder; use a validated adapter with concrete parameters")
+
+    # Never execute malformed device paths as commands.
     if not plan.target or any(not token for token in plan.command):
         raise PolicyError("plan contains an invalid target or command token")
 
