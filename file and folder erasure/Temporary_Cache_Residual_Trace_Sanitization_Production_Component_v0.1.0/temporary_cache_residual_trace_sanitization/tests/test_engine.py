@@ -26,7 +26,7 @@ def test_sanitize_deletes_current_trace(tmp_path):
     d=tmp_path/"cache"; d.mkdir()
     (d/"a").write_bytes(b"a"*10)
     (d/"b").write_bytes(b"b"*20)
-    r=sanitize(d)
+    r=sanitize(d,verify=True)
     assert r.status=="SANITIZED"
     assert r.items_deleted==2
     assert r.bytes_deleted==30
@@ -46,7 +46,7 @@ def test_symlink_not_followed(tmp_path):
     d=tmp_path/"cache"; d.mkdir()
     real=tmp_path/"real"; real.write_text("KEEP")
     link=d/"link"; link.symlink_to(real)
-    r=sanitize(d)
+    r=sanitize(d,verify=True)
     assert real.read_text()=="KEEP"
     assert r.skipped_items>=1
 
@@ -64,7 +64,7 @@ def test_dangerous_root_rejected():
 def test_audit(tmp_path):
     d=tmp_path/"cache"; d.mkdir()
     (d/"x").write_text("x")
-    r=sanitize(d)
+    r=sanitize(d,verify=True)
     out=write_audit(tmp_path/"audit.json",r)
     data=json.loads(out.read_text())
     assert data["method"]=="temporary-cache-residual-trace-sanitization"
