@@ -2,8 +2,7 @@ from __future__ import annotations
 import argparse, json, sys
 from .engine import LocalKeyStore, create_envelope, save_envelope, load_envelope, destroy_key, verify_erasure, write_audit
 
-def _store(path):
-    return LocalKeyStore(path)
+def _store(path): return LocalKeyStore(path)
 
 def main(argv=None):
     p=argparse.ArgumentParser(description="Cryptographic erasure component.")
@@ -31,15 +30,18 @@ def main(argv=None):
         target=a.target_id or a.key_id
         try:
             destroy_key(ks,a.key_id)
-            if ks.exists(a.key_id):
-                raise RuntimeError("key still exists after destruction")
+            if ks.exists(a.key_id): raise RuntimeError("key still exists after destruction")
             if a.target_id:
                 env=load_envelope(a.target_id); verified,reason=verify_erasure(ks,env)
                 if not verified: raise RuntimeError(f"verification failed: {reason}")
-            if a.audit: write_audit(a.audit,action="destroy-key",key_id=a.key_id,target_id=target,status="SANITIZED")
+            if a.audit:
+                try: write_audit(a.audit,action="destroy-key",key_id=a.key_id,target_id=target,status="SANITIZED")
+                except (OSError,ValueError,TypeError) as exc: raise RuntimeError(f"audit write failed: {exc}") from exc
             print(json.dumps({"status":"SANITIZED","key_id":a.key_id,"target_id":target,"verified":True},indent=2)); return 0
         except Exception as exc:
-            if a.audit: write_audit(a.audit,action="destroy-key",key_id=a.key_id,target_id=target,status="ERROR",details={"error":str(exc)})
-            print(json.dumps({"status":"ERROR","error":str(exc)},indent=2)); return 1
+            if a.audit:
+                try: write_audit(a.audit,action="destroy-key",key_id=a.key_id,target_id=target,status="ERROR",details={"error":str(exc)})
+                except (OSError,ValueError,TypeError): pass
+            print(json.dumps({"status":"ERROR","error":str(exc)})); return 1
 
 if __name__=="__main__": raise SystemExit(main())
