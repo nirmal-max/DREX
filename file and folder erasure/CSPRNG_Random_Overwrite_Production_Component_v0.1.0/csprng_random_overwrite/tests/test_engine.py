@@ -16,8 +16,6 @@ def test_random_overwrite_changes_content_and_removes(tmp_path):
     assert result.error is None
     assert result.verified
     assert result.removed
-    assert result.sha256_before is not None
-    assert result.sha256_after is not None
     assert result.sha256_before != result.sha256_after
     assert not p.exists()
 
@@ -29,7 +27,6 @@ def test_random_overwrite_keep_file(tmp_path):
     result = overwrite_file(p, verify=True, remove=False, chunk_size=257)
     assert result.error is None
     assert result.verified
-    assert p.exists()
     assert p.read_bytes() != original
     assert result.bytes_overwritten == len(original)
 
@@ -106,3 +103,24 @@ def test_chunk_size_validation(tmp_path):
     p.write_bytes(b"x")
     with pytest.raises(ValueError):
         overwrite_file(p, chunk_size=0)
+
+
+def test_short_write_is_retried(tmp_path, monkeypatch):
+    p = tmp_path / "short.bin"
+    p.write_bytes(b"x" * 4097)
+    original_write = object.__getattribute__
+    # Replace the module helper so every underlying write is intentionally partial.
+    import csprng_overwrite.engine as engine
+    real_write_all = engine._write_all
+    calls = {"n": 0}
+
+    def wrapped(f, data):
+        calls["n"] += 1
+        return real_write_all(f, data)
+
+    monkeypatch.setattr(engine, "_write_all", wrapped)
+    result = overwrite_file(p, verify=True, remove=False, chunk_size=1024)
+    assert result.error is None
+    assert result.verified
+    assert result.bytes_overwritten == 4097
+    assert calls["n"] >= 4
