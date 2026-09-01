@@ -98,18 +98,28 @@ def _clear_xattrs(path: Path):
 
 
 def _normalize_times(path: Path):
-    # Preserve logical content; normalize access/modification timestamps.
-    os.utime(path, ns=(0, 0), follow_symlinks=False)
+    # The target has already been rejected as a symlink. Windows Python builds do not
+    # universally expose follow_symlinks for os.utime, so use the portable two-argument
+    # form after validation. This changes only access/modified times.
+    try:
+        os.utime(path, ns=(0, 0), follow_symlinks=False)
+    except (NotImplementedError, TypeError, ValueError):
+        os.utime(path, ns=(0, 0))
+
+    st = path.lstat()
+    if st.st_atime_ns != 0 or st.st_mtime_ns != 0:
+        raise MetadataError("timestamp normalization could not be verified")
 
 
 def _normalize_permissions(path: Path):
-    # Conservative POSIX normalization: owner read/write only. On Windows this may
-    # be unsupported or have different semantics; callers should not enable it blindly.
     if os.name == "nt":
         raise MetadataError("permission normalization is not supported by this backend")
     mode = stat.S_IMODE(path.lstat().st_mode)
-    # Retain file type; remove group/other permission bits and special bits.
     os.chmod(path, mode & stat.S_IRUSR | stat.S_IWUSR, follow_symlinks=False)
+
+    verified = stat.S_IMODE(path.lstat().st_mode)
+    if verified != (mode & stat.S_IRUSR | stat.S_IWUSR):
+        raise MetadataError("permission normalization could not be verified")
 
 
 def _rename(path: Path, token: str):
@@ -119,6 +129,8 @@ def _rename(path: Path, token: str):
     if candidate.exists() or candidate.is_symlink():
         raise MetadataError("generated destination already exists")
     path.rename(candidate)
+    if not candidate.exists() or candidate.is_symlink():
+        raise MetadataError("rename could not be verified")
     return candidate
 
 
@@ -153,8 +165,6 @@ def sanitize_metadata(
             if normalize_permissions:
                 _normalize_permissions(item)
 
-        # Rename only the explicitly selected top-level target. Recursive renaming would
-        # create ordering/collision complexity and is intentionally not implicit.
         if rename:
             new_path=_rename(path, name_token)
             renamed=True
