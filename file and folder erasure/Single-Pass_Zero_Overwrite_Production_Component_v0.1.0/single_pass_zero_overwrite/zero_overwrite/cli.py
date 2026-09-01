@@ -39,7 +39,11 @@ def main(argv=None) -> int:
         return 2
 
     if args.audit:
-        write_audit(args.audit, results)
+        try:
+            write_audit(args.audit, results)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"error: audit write failed: {exc}", file=sys.stderr)
+            return 3
 
     print(json.dumps([r.to_dict() for r in results], indent=2))
     return 1 if any(r.error for r in results) else 0
