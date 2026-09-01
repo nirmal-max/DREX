@@ -35,20 +35,8 @@ def main(argv=None):
         "recursive": args.recursive,
     }
 
-    # Safe default: inspection only. An explicit execute flag and exact target
-    # confirmation are both required before making changes.
     if not args.execute:
-        print(
-            json.dumps(
-                {
-                    "mode": "dry-run",
-                    "inspection": inspect_metadata(target),
-                    "requested_actions": requested,
-                    "warning": "No data or metadata was changed.",
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps({"mode": "dry-run", "inspection": inspect_metadata(target), "requested_actions": requested, "warning": "No data or metadata was changed."}, indent=2))
         return 0
 
     if args.confirm is None:
@@ -57,33 +45,20 @@ def main(argv=None):
     if args.confirm != str(target):
         print("error: --confirm must exactly match target", file=sys.stderr)
         return 2
-
-    if not any(
-        (
-            args.clear_xattrs,
-            args.normalize_times,
-            args.normalize_permissions,
-            args.rename,
-        )
-    ):
-        print(
-            "error: --execute requires at least one sanitization action",
-            file=sys.stderr,
-        )
+    if not any((args.clear_xattrs, args.normalize_times, args.normalize_permissions, args.rename)):
+        print("error: --execute requires at least one sanitization action", file=sys.stderr)
         return 2
 
-    result = sanitize_metadata(
-        target,
-        clear_xattrs=args.clear_xattrs,
-        normalize_times=args.normalize_times,
-        normalize_permissions=args.normalize_permissions,
-        rename=args.rename,
-        name_token=args.name_token,
-        recursive=args.recursive,
-    )
+    result = sanitize_metadata(target, clear_xattrs=args.clear_xattrs, normalize_times=args.normalize_times,
+                               normalize_permissions=args.normalize_permissions, rename=args.rename,
+                               name_token=args.name_token, recursive=args.recursive)
 
     if args.audit:
-        write_audit(args.audit, result)
+        try:
+            write_audit(args.audit, result)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"error: audit write failed: {exc}", file=sys.stderr)
+            return 3
 
     print(json.dumps(result.to_dict(), indent=2))
     return 0 if result.status == "SANITIZED" else 1
