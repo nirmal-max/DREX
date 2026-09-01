@@ -1,0 +1,39 @@
+name: Repository-wide 100x Regression
+
+on:
+  push:
+    branches: [repair/production-ready-cli-fix]
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Discover Python test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t suites < <(find . -type d -name tests -not -path '*/.git/*' | sort)
+          printf '%s\n' "${suites[@]}" | tee /tmp/test-suites.txt
+          test "${#suites[@]}" -gt 0
+      - name: Compile Python sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q .
+      - name: Run every discovered suite 100 times
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r suite; do
+            echo "=== SUITE: $suite ==="
+            for i in $(seq 1 100); do
+              echo "--- iteration $i/100 ---"
+              python -m pytest -q "$suite"
+            done
+          done < /tmp/test-suites.txt
