@@ -11,4 +11,4 @@ def test_cli_confirmation(tmp_path):
 
 def test_cli_execute(tmp_path):
     d=tmp_path/"cache"; d.mkdir(); (d/"x").write_text("x")
-    assert main([str(d),"--execute","--confirm",str(d)])==0
+    assert main([str(d),"--execute","--confirm",str(d),"--verify"])==0
