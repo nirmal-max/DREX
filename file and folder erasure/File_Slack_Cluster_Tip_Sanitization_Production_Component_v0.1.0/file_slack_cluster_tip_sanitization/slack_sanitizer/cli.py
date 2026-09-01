@@ -22,11 +22,19 @@ def main(argv=None):
     if args.confirm != str(target):
         print("error: --confirm must exactly match target", file=sys.stderr)
         return 2
+    if not args.verify:
+        print("error: --verify is required when --execute is used; refusing destructive execution", file=sys.stderr)
+        return 2
     backend = SyntheticBackend() if args.synthetic_backend else None
-    result = sanitize_tail(target, backend=backend, pattern=args.pattern, verify=args.verify)
-    if args.audit: write_audit(args.audit, result)
+    result = sanitize_tail(target, backend=backend, pattern=args.pattern, verify=True)
+    if args.audit:
+        try:
+            write_audit(args.audit, result)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"error: audit write failed: {exc}", file=sys.stderr)
+            return 3
     print(json.dumps(result.to_dict(), indent=2))
-    return 0 if result.status in {"SANITIZED","NO_SLACK"} else 1
+    return 0 if result.status in {"SANITIZED","NO_SLACK"} and result.verified else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())
