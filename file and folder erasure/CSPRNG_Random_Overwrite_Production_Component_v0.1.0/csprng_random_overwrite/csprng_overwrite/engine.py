@@ -58,17 +58,17 @@ def _hash_file(path: Path, chunk_size: int) -> str:
 
 
 def _random_block(size: int) -> bytes:
-    # Python's secrets module delegates to the operating system's secure random source.
     return secrets.token_bytes(size)
 
 
-def _verify_changed(path: Path, original_sha256: str, chunk_size: int) -> str:
-    after = _hash_file(path, chunk_size)
-    if after == original_sha256:
-        raise CSPRNGOverwriteError(
-            "verification failed: post-overwrite SHA-256 equals the original SHA-256"
-        )
-    return after
+def _write_all(f, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        n = f.write(view[offset:])
+        if n is None or n <= 0:
+            raise CSPRNGOverwriteError("short write: file write made no progress")
+        offset += n
 
 
 def _clear_readonly(path: Path) -> None:
@@ -89,6 +89,8 @@ def overwrite_file(
     _validate_regular_file(path)
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if remove and not verify:
+        raise ValueError("remove=True requires verify=True")
 
     started = _utc_now()
     before = _hash_file(path, chunk_size)
@@ -101,7 +103,7 @@ def overwrite_file(
             remaining = total
             while remaining:
                 n = min(remaining, chunk_size)
-                f.write(_random_block(n))
+                _write_all(f, _random_block(n))
                 written += n
                 remaining -= n
                 if progress:
@@ -109,46 +111,33 @@ def overwrite_file(
             f.flush()
             os.fsync(f.fileno())
 
+        after = _hash_file(path, chunk_size) if verify else None
+        verified = False
         if verify:
-            after = _hash_file(path, chunk_size)
-            # Empty files contain no data bytes to randomize; unchanged digest is expected.
-            # For non-empty targets, an unchanged digest is treated as verification failure.
             if total > 0 and after == before:
                 raise CSPRNGOverwriteError(
                     "verification failed: post-overwrite SHA-256 equals the original SHA-256"
                 )
             verified = True
-        else:
-            after = None
-            verified = False
 
         if remove:
+            if not verified:
+                raise CSPRNGOverwriteError("refusing removal without successful verification")
             path.unlink()
             removed = True
         else:
             removed = False
 
         return ErasureResult(
-            target=str(path),
-            bytes_overwritten=written,
-            verified=verified,
-            removed=removed,
-            started_utc=started,
-            completed_utc=_utc_now(),
-            sha256_before=before,
-            sha256_after=after,
+            target=str(path), bytes_overwritten=written, verified=verified,
+            removed=removed, started_utc=started, completed_utc=_utc_now(),
+            sha256_before=before, sha256_after=after,
         )
     except Exception as exc:
         return ErasureResult(
-            target=str(path),
-            bytes_overwritten=written,
-            verified=False,
-            removed=False,
-            started_utc=started,
-            completed_utc=_utc_now(),
-            sha256_before=before,
-            sha256_after=None,
-            error=str(exc),
+            target=str(path), bytes_overwritten=written, verified=False,
+            removed=False, started_utc=started, completed_utc=_utc_now(),
+            sha256_before=before, sha256_after=None, error=str(exc),
         )
 
 
@@ -157,33 +146,23 @@ def _safe_tree(root: Path) -> list[Path]:
         raise CSPRNGOverwriteError(f"refusing symbolic-link root: {root}")
     if not root.is_dir():
         raise CSPRNGOverwriteError(f"target is not a directory: {root}")
-    files = []
-    for p in root.rglob("*"):
-        if p.is_symlink():
-            continue
-        if p.is_file():
-            files.append(p)
-    return sorted(files)
+    return sorted(p for p in root.rglob("*") if not p.is_symlink() and p.is_file())
 
 
 def overwrite_tree(
     target: str | os.PathLike,
-    *,
-    verify: bool = True,
-    remove: bool = True,
+    *, verify: bool = True, remove: bool = True,
     chunk_size: int = 1024 * 1024,
 ) -> list[ErasureResult]:
     root = Path(target)
-    results = []
-    for p in _safe_tree(root):
-        results.append(
-            overwrite_file(p, verify=verify, remove=remove, chunk_size=chunk_size)
-        )
-
+    results = [
+        overwrite_file(p, verify=verify, remove=remove, chunk_size=chunk_size)
+        for p in _safe_tree(root)
+    ]
     if remove and all(r.error is None and r.removed for r in results):
         for d in sorted(
             (p for p in root.rglob("*") if p.is_dir() and not p.is_symlink()),
-            reverse=True
+            reverse=True,
         ):
             try:
                 d.rmdir()
