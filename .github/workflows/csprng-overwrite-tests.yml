@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: file and folder erasure/CSPRNG_Random_Overwrite_Production_Component_v0.1.0
+        working-directory: File-Folder Erasure/CSPRNG_Random_Overwrite_Production_Component_v0.1.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

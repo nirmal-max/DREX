@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: disk erasure/nvme_secure_erase_v2.1.0
+        working-directory: Drive Erasure/nvme_secure_erase_v2.1.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: disk erasure/verified_overwrite_v2.1.0
+        working-directory: Drive Erasure/verified_overwrite_v2.1.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

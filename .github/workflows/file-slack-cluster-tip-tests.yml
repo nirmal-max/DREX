@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: file and folder erasure/File_Slack_Cluster_Tip_Sanitization_Production_Component_v0.1.0
+        working-directory: File-Folder Erasure/File_Slack_Cluster_Tip_Sanitization_Production_Component_v0.1.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
