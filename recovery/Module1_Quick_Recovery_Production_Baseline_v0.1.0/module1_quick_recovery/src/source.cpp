@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <array>
 #include <cstring>
+#include <limits>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
