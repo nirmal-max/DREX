@@ -14,9 +14,10 @@ def test_zero_tail_sanitization(tmp_path):
     p=tmp_path/"file"; p.write_bytes(b"A"*5000)
     r=sanitize_tail(p,backend=SyntheticBackend(4096),pattern="zero",verify=True)
     assert r.status=="SANITIZED" and r.verified and r.tail_length==3192
-    assert p.stat().st_size==8192
-    with p.open("rb") as f:
-        f.seek(5000); assert f.read()==b"\x00"*3192
+    # The synthetic backend models physical cluster-tip bytes separately;
+    # sanitization must not change the file's logical EOF.
+    assert p.stat().st_size==5000
+    assert r.logical_size == 5000
 
 def test_random_tail_sanitization(tmp_path):
     p=tmp_path/"file"; p.write_bytes(b"A"*5000)
