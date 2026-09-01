@@ -98,13 +98,16 @@ def _clear_xattrs(path: Path):
 
 
 def _normalize_times(path: Path):
-    # The target has already been rejected as a symlink. Windows Python builds do not
-    # universally expose follow_symlinks for os.utime, so use the portable two-argument
-    # form after validation. This changes only access/modified times.
+    # The target has already been rejected as a symlink. Some Windows Python builds
+    # expose os.utime but do not implement its follow_symlinks keyword. In that case,
+    # use the portable two-argument form; the prior validation makes this safe here.
     try:
         os.utime(path, ns=(0, 0), follow_symlinks=False)
-    except (NotImplementedError, TypeError, ValueError):
-        os.utime(path, ns=(0, 0))
+    except (NotImplementedError, TypeError, ValueError, OSError) as exc:
+        try:
+            os.utime(path, ns=(0, 0))
+        except OSError as fallback_exc:
+            raise MetadataError(f"timestamp normalization failed: {fallback_exc}") from exc
 
     st = path.lstat()
     if st.st_atime_ns != 0 or st.st_mtime_ns != 0:
