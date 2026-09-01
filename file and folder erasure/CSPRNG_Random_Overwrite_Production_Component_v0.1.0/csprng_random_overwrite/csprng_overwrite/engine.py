@@ -111,6 +111,13 @@ def overwrite_file(
             f.flush()
             os.fsync(f.fileno())
 
+        current_size = path.stat().st_size
+        if current_size != total or written != total:
+            raise CSPRNGOverwriteError(
+                f"verification failed: expected {total} bytes overwritten, "
+                f"wrote {written} and file size is {current_size}"
+            )
+
         after = _hash_file(path, chunk_size) if verify else None
         verified = False
         if verify:
