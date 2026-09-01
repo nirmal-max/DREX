@@ -74,17 +74,32 @@ def _write_all(f, data):
         if n is None or n <= 0: raise OSError("short write: no progress")
         total += n
 
+def _hash_stream(path: Path, chunk=1024*1024):
+    h=hashlib.sha256()
+    with path.open("rb", buffering=0) as f:
+        while True:
+            block=f.read(chunk)
+            if not block: break
+            h.update(block)
+    return h.digest()
+
 def _secure_overwrite(path: Path, chunk=1024*1024):
     size=path.stat().st_size
-    before=hashlib.sha256(path.read_bytes()).digest() if size <= 8*1024*1024 else None
+    expected=hashlib.sha256()
     with path.open("r+b", buffering=0) as f:
         left=size
         while left:
-            n=min(chunk,left); _write_all(f,secrets.token_bytes(n)); left-=n
+            n=min(chunk,left)
+            block=secrets.token_bytes(n)
+            expected.update(block)
+            _write_all(f,block)
+            left-=n
         f.flush(); os.fsync(f.fileno())
-    if before is not None:
-        after=hashlib.sha256(path.read_bytes()).digest()
-        if after == before: raise TraceError(f"verification failed: overwrite did not change {path}")
+    if path.stat().st_size != size:
+        raise TraceError(f"verification failed: file size changed during overwrite: {path}")
+    actual=_hash_stream(path,chunk)
+    if actual != expected.digest():
+        raise TraceError(f"verification failed: post-overwrite content mismatch: {path}")
     return True
 
 def sanitize(root, *, secure_overwrite=False, verify=False, recursive=True, rule_id="custom", label="Explicit trace target"):
